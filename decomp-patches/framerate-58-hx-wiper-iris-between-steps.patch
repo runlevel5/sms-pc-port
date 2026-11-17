@@ -1,0 +1,116 @@
+Reason: port: at frame_rate 60 or 120 the iris wipe (Hx_Circle) stood still on the frames between its native 30 Hz steps (framerate-42), so it moved at half or a quarter of the rate of the picture around it; on those frames it is drawn between the step last drawn and the next, and ends when it did
+--- a/src/GC2D/hx_wiper.c
++++ b/src/GC2D/hx_wiper.c
+@@ -164,6 +164,10 @@
+ static int hxs_logo_resetflag;
+ static int hxs_logodraw_resetflag;
+ static u32 hx_pc_frame;
++/* port: on a frame that draws without advancing, how far it is from the last
++ * step to the next (1/2 at frame_rate 60; 1/4, 1/2 and 3/4 at 120), for a
++ * handler that draws between the two (Hx_Circle); 0 on an advancing frame. */
++static f32 hx_pc_between;
+ static void hx_pc_keep(void* p, u32 n)
+ {
+ 	int i;
+@@ -596,9 +600,12 @@
+ 				at += hx_pc_keep_list[i].n;
+ 			}
+ 			hx.rate = rate;
++			hx_pc_between = (f32)((hx_pc_frame - 1) % (u32)(port_active_frame_rate / 30))
++			                / (f32)(port_active_frame_rate / 30);
+ 			GXDrawDone();
+ 			hx.handler();
+ 			GXDrawDone();
++			hx_pc_between = 0.0f;
+ 			at = 0;
+ 			for (i = 0; i < hx_pc_keep_count && at + hx_pc_keep_list[i].n <= sizeof(saved); i++) {
+ 				memcpy(hx_pc_keep_list[i].p, saved + at, hx_pc_keep_list[i].n);
+@@ -682,6 +689,17 @@
+ 	static u16 a2;
+ 	static u16 a3;
+ 	static f32 boke;
++#ifdef TARGET_PC
++	/* port: the iris moved a step each native 30 Hz frame and stood still on
++	 * the frames between (framerate-42), half the frames at frame_rate 60. On
++	 * those it is now drawn between the step last drawn and the next, which
++	 * the handler works out as ever and Hx_UpdateWipe then takes back, so it
++	 * moves every frame and still ends when it did. */
++	/* r, p1, p2, p3, a1, a2, a3, then p1 and p2 after their step (the next ring
++	 * out starts there), as last drawn on an advancing frame */
++	static f32 drawn[9];
++	f32 boke0 = boke;
++#endif
+ 
+ #ifdef TARGET_PC
+ 	HX_PC_KEEP(r);
+@@ -724,7 +742,11 @@
+ 			boke += 0.06666667f;
+ 			if (boke > 1.0f)
+ 				boke = 1.0f;
++#ifdef TARGET_PC
++			Hx_FrBufferMorf(boke0 + (boke - boke0) * (hx_pc_between > 0.0f ? hx_pc_between : 1.0f));
++#else
+ 			Hx_FrBufferMorf(boke);
++#endif
+ 			Hx_SetVFilter(1.0f);
+ 			break;
+ 		case 0:
+@@ -744,6 +766,50 @@
+ 		break;
+ 	}
+ 
++#ifdef TARGET_PC
++	{
++		/* the steps as below, keeping what each ring is drawn with */
++		f32 d[9];
++		int i;
++		d[0] = r;
++		d[1] = p1;
++		d[4] = a1;
++		if (r > 22.0f) {
++			p1 += 0.05f;
++			if (a1 < 0xFF00)
++				a1 += 0x180;
++		}
++		d[7] = p1;
++		d[2] = p2;
++		d[5] = a2;
++		if (r > 42.0f) {
++			p2 += 0.12f;
++			if (a2 < 0xFF00)
++				a2 += 0xC0;
++		}
++		d[8] = p2;
++		d[3] = p3;
++		d[6] = a3;
++		if (r > 62.0f) {
++			p3 += 0.25f;
++			if (a3 < 0xFF00)
++				a3 += 0x80;
++		}
++		for (i = 0; i < 9; i++) {
++			if (hx_pc_between > 0.0f)
++				d[i] = drawn[i] + (d[i] - drawn[i]) * hx_pc_between;
++			else
++				drawn[i] = d[i];
++		}
++		Hxs1_Circle(d[0]);
++		if (d[0] > 22.0f)
++			Hxs2_Circle((u16)d[4] >> 8, (d[0] - 20.0f) + d[1], d[0]);
++		if (d[0] > 42.0f)
++			Hxs2_Circle((u16)d[5] >> 8, (d[0] - 40.0f) + d[2], (d[0] - 20.0f) + d[7]);
++		if (d[0] > 62.0f)
++			Hxs2_Circle((u16)d[6] >> 8, (d[0] - 60.0f) + d[3], (d[0] - 40.0f) + d[8]);
++	}
++#else
+ 	Hxs1_Circle(r);
+ 
+ 	if (r > 22.0f) {
+@@ -764,6 +830,7 @@
+ 		if (a3 < 0xFF00)
+ 			a3 += 0x80;
+ 	}
++#endif
+ }
+ 
+ /// One vertex of a line: position, then colour.
